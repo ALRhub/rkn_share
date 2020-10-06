@@ -1,7 +1,7 @@
 import torch
 import numpy as np
 from util.ConfigDict import ConfigDict
-from typing import Iterable, Tuple, List
+from typing import Iterable, Tuple, List, Union
 nn = torch.nn
 
 
@@ -29,22 +29,22 @@ def dadbt(a: torch.Tensor, diag_mat: torch.Tensor, b: torch.Tensor) -> torch.Ten
     return bmv(a * b, diag_mat)
 
 
-def elup1(x: torch.Tensor) -> torch.Tensor:
+def var_activation(x: torch.Tensor) -> torch.Tensor:
     """
     elu + 1 activation faction to ensure positive covariances
     :param x: input
     :return: exp(x) if x < 0 else x + 1
     """
-    return torch.exp(x).where(x < 0.0, x + 1.0)
+    return torch.log(torch.exp(x) + 1.0)
 
 
-def elup1_inv(x: torch.Tensor) -> torch.Tensor:
+def var_activation_inverse(x: Union[float, np.ndarray]) -> Union[float, np.ndarray]:
     """
     inverse of elu+1, numpy only, for initialization
     :param x: input
     :return:
     """
-    return np.log(x) if x < 1.0 else (x - 1.0)
+    return np.log(np.exp(x) - 1.0)
 
 
 class RKNCell(nn.Module):
@@ -79,15 +79,12 @@ class RKNCell(nn.Module):
         self.c = config
         self._dtype = dtype
 
-
-
         self._build_transition_model()
 
     @property
     def _device(self):
         return self._tm_11_full.device
 
- #   @torch.jit.script_method
     def forward(self, prior_mean: torch.Tensor, prior_cov: Iterable[torch.Tensor],
                 obs: torch.Tensor, obs_var: torch.Tensor, obs_valid: torch.Tensor = None) -> \
             Tuple[torch.Tensor, Iterable[torch.Tensor], torch.Tensor, Iterable[torch.Tensor]]:
@@ -155,7 +152,7 @@ class RKNCell(nn.Module):
         self._coefficient_net = self._build_coefficient_net(self.c.trans_net_hidden_units,
                                                             self.c.trans_net_hidden_activation)
 
-        init_trans_cov = elup1_inv(self.c.trans_covar)
+        init_trans_cov = var_activation_inverse(self.c.trans_covar)
         # TODO: This is currently a different noise for each dim, not like in original paper (and acrkn)
         self._log_transition_noise = \
             nn.Parameter(nn.init.constant_(torch.empty(1, self._lsd, dtype=self._dtype), init_trans_cov))
@@ -185,7 +182,7 @@ class RKNCell(nn.Module):
         tm22 = tm22_full * self._band_mask
         tm22 += torch.eye(self._lod, device=self._device)[None, :, :]
 
-        trans_cov = elup1(self._log_transition_noise)
+        trans_cov = var_activation(self._log_transition_noise)
 
         return [tm11, tm12, tm21, tm22], trans_cov
 

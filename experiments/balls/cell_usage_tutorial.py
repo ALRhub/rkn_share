@@ -1,7 +1,7 @@
 import torch
 import numpy as np
 import os
-from rkn_cell.RKNCell import elup1, RKNCell
+from rkn_cell.RKNCell import var_activation, RKNCell
 from util.Losses import mse, gaussian_nll
 import time as t
 nn = torch.nn
@@ -63,7 +63,7 @@ class MyEncoder(nn.Module):
         h = nn.functional.normalize(h, p=2, dim=-1, eps=1e-8)
         mean = self._mean_layer(h)
         log_var = self._log_var_layer(h)
-        var = elup1(log_var)
+        var = var_activation(log_var)
         return mean, var
 
 
@@ -101,7 +101,7 @@ class MyDecoder(nn.Module):
         for layer in self._hidden_layers_var:
             h_var = layer(h_var)
         log_var = self._out_layer_var(latent_cov)
-        var = elup1(log_var)
+        var = var_activation(log_var)
         return mean, var
 
 enc = MyEncoder(lod=15).to(device)

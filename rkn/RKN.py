@@ -6,6 +6,7 @@ import time as t
 from rkn.Encoder import Encoder
 from rkn.Decoder import SplitDiagGaussianDecoder
 from rkn.RKNLayer import RKNLayer
+from rkn_cell.RKNCell import var_activation, var_activation_inverse
 from util.ConfigDict import ConfigDict
 from typing import Tuple
 
@@ -49,15 +50,16 @@ class RKN:
 
         # build (default) initial state
         self._initial_mean = torch.zeros(1, self._lsd).to(self._device)
-        self._icu = torch.nn.Parameter(self._initial_state_variance * torch.ones(1, self._lod).to(self._device))
-        self._icl = torch.nn.Parameter(self._initial_state_variance * torch.ones(1, self._lod).to(self._device))
+        log_ic_init = var_activation_inverse(self._initial_state_variance)
+        self._log_icu = torch.nn.Parameter(log_ic_init * torch.ones(1, self._lod).to(self._device))
+        self._log_icl = torch.nn.Parameter(log_ic_init * torch.ones(1, self._lod).to(self._device))
         self._ics = torch.zeros(1, self._lod).to(self._device)
 
         # params and optimizer
         self._params = list(self._enc.parameters())
         self._params += list(self._rkn_layer.parameters())
         self._params += list(self._dec.parameters())
-        self._params += [self._icu, self._icl]
+        self._params += [self._log_icu, self._log_icl]
 
         self._optimizer = optim.Adam(self._params, lr=self._learning_rate)
         self._shuffle_rng = np.random.RandomState(42)  # rng for shuffling batches
@@ -93,7 +95,8 @@ class RKN:
         self._optimizer.zero_grad()
 
         w, w_var = self._enc(obs_batch)
-        post_mean, post_cov  = self._rkn_layer(w, w_var, self._initial_mean, [self._icu, self._icl, self._ics])
+        post_mean, post_cov = self._rkn_layer(w, w_var, self._initial_mean,
+                                              [var_activation(self._log_icu), var_activation(self._log_icl), self._ics])
         out_mean, out_var = self._dec(post_mean, torch.cat(post_cov, dim=-1))
 
         loss = gaussian_nll(target_batch, out_mean, out_var)
@@ -155,7 +158,9 @@ class RKN:
                 torch_targets = torch.from_numpy(targets[cur_slice].astype(np.float32)).to(self._device)
 
                 w, w_var = self._enc(torch_obs)
-                post_mean, post_cov = self._rkn_layer(w, w_var, self._initial_mean, [self._icu, self._icl, self._ics])
+                post_mean, post_cov = self._rkn_layer(w, w_var, self._initial_mean,
+                                                      [var_activation(self._log_icu), var_activation(self._log_icl),
+                                                       self._ics])
                 out_mean, out_var = self._dec(post_mean, torch.cat(post_cov, dim=-1))
 
                 loss = gaussian_nll(torch_targets, out_mean, out_var)
