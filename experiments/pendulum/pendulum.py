@@ -38,42 +38,6 @@ class PendulumRKN(RKN):
         layers.append(nn.ReLU())
         return nn.ModuleList(layers), 30
 
-    def _build_enc_hidden_layers_mean(self):
-        layers = []
-        # hidden layer 1
-        layers.append(nn.Conv2d(in_channels=1, out_channels=12, kernel_size=5, padding=2))
-        layers.append(nn.ReLU())
-        layers.append(nn.MaxPool2d(kernel_size=2, stride=2))
-
-        # hidden layer 2
-        layers.append(nn.Conv2d(in_channels=12, out_channels=12, kernel_size=3, stride=2, padding=1))
-        layers.append(nn.ReLU())
-        layers.append(nn.MaxPool2d(kernel_size=2, stride=2))
-
-        # hidden layer 3
-        layers.append(nn.Flatten())
-        layers.append(nn.Linear(in_features=108, out_features=30))
-        layers.append(nn.ReLU())
-        return nn.ModuleList(layers), 30
-
-    def _build_enc_hidden_layers_var(self):
-        layers = []
-        # hidden layer 1
-        layers.append(nn.Conv2d(in_channels=1, out_channels=3, kernel_size=5, padding=2))
-        layers.append(nn.ReLU())
-        layers.append(nn.MaxPool2d(kernel_size=2, stride=2))
-
-        # hidden layer 2
-        layers.append(nn.Conv2d(in_channels=3, out_channels=3, kernel_size=3, stride=2, padding=1))
-        layers.append(nn.ReLU())
-        layers.append(nn.MaxPool2d(kernel_size=2, stride=2))
-
-        # hidden layer 3
-        layers.append(nn.Flatten())
-        layers.append(nn.Linear(in_features=27, out_features=30))
-        layers.append(nn.ReLU())
-        return nn.ModuleList(layers), 30
-
     def _build_dec_hidden_layers_mean(self):
         return nn.ModuleList([
             nn.Linear(in_features=2 * self._lod, out_features=30),

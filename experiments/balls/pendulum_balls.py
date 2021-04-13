@@ -8,6 +8,7 @@ from util.MyLayerNorm2d import MyLayerNorm2d
 
 nn = torch.nn
 
+
 class BallTrackRKN(RKN):
 
     def __init__(self, target_dim: int, lod: int, cell_config: ConfigDict, use_cuda_if_available: bool = True):
@@ -44,6 +45,7 @@ class BallTrackRKN(RKN):
             nn.Linear(in_features=3 * self._lod, out_features=30),
             nn.Tanh()
         ]), 30
+
 
 if __name__ == "__main__":
 

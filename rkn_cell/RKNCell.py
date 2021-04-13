@@ -81,9 +81,25 @@ class RKNCell(nn.Module):
 
         self._build_transition_model()
 
-    @property
-    def _device(self):
-        return self._tm_11_full.device
+    def _compute_band_util(self,
+                           lod: int,
+                           bandwidth: int):
+        self._num_entries = lod + 2 * np.sum(np.arange(lod - bandwidth, lod))
+        np_mask = np.ones([lod, lod], dtype=np.float32)
+        np_mask = np.triu(np_mask, -bandwidth) * np.tril(np_mask, bandwidth)
+        mask = torch.tensor(np_mask, dtype=torch.bool)
+        idx = torch.where(mask == 1)
+        diag_idx = torch.where(idx[0] == idx[1])
+
+        self.register_buffer("_idx0", idx[0], persistent=False)
+        self.register_buffer("_idx1", idx[1], persistent=False)
+        self.register_buffer("_diag_idx", diag_idx[0], persistent=False)
+
+    def _unflatten_tm(self,
+                      tm_flat: torch.Tensor) -> torch.Tensor:
+        tm = torch.zeros(tm_flat.shape[0], self._lod, self._lod, device=tm_flat.device)
+        tm[:, self._idx0, self._idx1] = tm_flat
+        return tm
 
     def forward(self, prior_mean: torch.Tensor, prior_cov: Iterable[torch.Tensor],
                 obs: torch.Tensor, obs_var: torch.Tensor, obs_valid: torch.Tensor = None) -> \
@@ -100,8 +116,6 @@ class RKNCell(nn.Module):
         :return: posterior mean at time t, posterior covariance at time t
                  prior mean at time t + 1, prior covariance time t + 1
         """
-        self._band_mask = self._band_mask.to(self._device)
-
         if self.c.never_invalid:
             post_mean, post_cov = self._update(prior_mean, prior_cov, obs, obs_var)
         else:
@@ -137,17 +151,20 @@ class RKNCell(nn.Module):
         :return:
         """
         # build state independent basis matrices
-        np_mask = np.ones([self._lod, self._lod], dtype=np.float32)
-        np_mask = np.triu(np_mask,  -self.c.bandwidth) * np.tril(np_mask, self.c.bandwidth)
-        self._band_mask = torch.from_numpy(np.expand_dims(np_mask, 0))
+        self._compute_band_util(lod=self._lod, bandwidth=self.c.bandwidth)
 
-        self._tm_11_full = nn.Parameter(torch.zeros(self.c.num_basis, self._lod, self._lod, dtype=self._dtype))
-        self._tm_12_full = \
-            nn.Parameter(0.2 * torch.eye(self._lod, dtype=self._dtype)[None, :, :].repeat(self.c.num_basis, 1, 1))
-        self._tm_21_full =\
-            nn.Parameter(-0.2 * torch.eye(self._lod, dtype=self._dtype)[None, :, :].repeat(self.c.num_basis, 1, 1))
-        self._tm_22_full = nn.Parameter(torch.zeros(self.c.num_basis, self._lod, self._lod, dtype=self._dtype))
-        self._transition_matrices_raw = [self._tm_11_full, self._tm_12_full, self._tm_21_full, self._tm_22_full]
+        self._tm_11_basis = nn.Parameter(torch.zeros(self.c.num_basis, self._num_entries))
+
+        tm_12_init = torch.zeros(self.c.num_basis, self._num_entries)
+        tm_12_init[:, self._diag_idx] += 0.2 * torch.ones(self._lod)
+        self._tm_12_basis = nn.Parameter(tm_12_init)
+
+        tm_21_init = torch.zeros(self.c.num_basis, self._num_entries)
+        tm_21_init[:, self._diag_idx] -= 0.2 * torch.ones(self._lod)
+        self._tm_21_basis = nn.Parameter(tm_21_init)
+
+        self._tm_22_basis = nn.Parameter(torch.zeros(self.c.num_basis, self._num_entries))
+        self._transition_matrices_raw = [self._tm_11_basis, self._tm_12_basis, self._tm_21_basis, self._tm_22_basis]
 
         self._coefficient_net = self._build_coefficient_net(self.c.trans_net_hidden_units,
                                                             self.c.trans_net_hidden_activation)
@@ -164,27 +181,22 @@ class RKNCell(nn.Module):
         :return: transition matrices (4 Blocks), transition covariance (vector of size lsd)
         """
         # prepare transition model
-        coefficients = torch.reshape(self._coefficient_net(post_mean), [-1, self.c.num_basis, 1, 1])
+        coefficients = torch.reshape(self._coefficient_net(post_mean), [-1, self.c.num_basis, 1])
 
-        tm11_full, tm12_full, tm21_full, tm22_full = [x[None, :, :, :] for x in self._transition_matrices_raw]
+        tm11_flat = (coefficients * self._tm_11_basis).sum(dim=1)
+        tm11_flat[:, self._diag_idx] += 1.0
 
-        tm11_full = (coefficients * tm11_full).sum(dim=1)
-        tm11 = tm11_full * self._band_mask
-        tm11 += torch.eye(self._lod, device=self._device)[None, :, :]
+        tm12_flat = (coefficients * self._tm_12_basis).sum(dim=1)
+        tm21_flat = (coefficients * self._tm_21_basis).sum(dim=1)
 
-        tm12_full = (coefficients * tm12_full).sum(dim=1)
-        tm12 = tm12_full * self._band_mask
+        tm22_flat = (coefficients * self._tm_22_basis).sum(dim=1)
+        tm22_flat[:, self._diag_idx] += 1.0
 
-        tm21_full = (coefficients * tm21_full).sum(dim=1)
-        tm21 = tm21_full * self._band_mask
-
-        tm22_full = (coefficients * tm22_full).sum(dim=1)
-        tm22 = tm22_full * self._band_mask
-        tm22 += torch.eye(self._lod, device=self._device)[None, :, :]
-
+        tm11, tm12, tm21, tm22 = [self._unflatten_tm(x) for x in [tm11_flat, tm12_flat, tm21_flat, tm22_flat]]
         trans_cov = var_activation(self._log_transition_noise)
 
         return [tm11, tm12, tm21, tm22], trans_cov
+
 
     def _update(self, prior_mean: torch.Tensor, prior_cov: Iterable[torch.Tensor],
                 obs_mean: torch.Tensor, obs_var: torch.Tensor) -> Tuple[torch.Tensor, List[torch.Tensor]]:
